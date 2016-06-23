@@ -28,10 +28,12 @@ PhEDEx block replica snapshots can be found on HDFS: data can be found on HDFS:/
 The schema description is here:
 http://awg-virtual.cern.ch/data-sources-index/projects/#phedex-blk-replicas-snapshot
 and in short it is:
-```now, dataset_name, dataset_id, dataset_is_open, dataset_time_create, dataset_time_update,
-   block_name, block_id, block_files, block_bytes, block_is_open, block_time_create, block_time_update,
-   node_name, node_id, br.is_active, br.src_files, br.src_bytes, br.dest_files, br.dest_bytes,
-   br.node_files, br.node_bytes, br.xfer_files, br.xfer_bytes, br.is_custodial, br.user_group, replica_time_create, replica_time_update
+
+```
+now, dataset_name, dataset_id, dataset_is_open, dataset_time_create, dataset_time_update,
+block_name, block_id, block_files, block_bytes, block_is_open, block_time_create, block_time_update,
+node_name, node_id, br.is_active, br.src_files, br.src_bytes, br.dest_files, br.dest_bytes,
+br.node_files, br.node_bytes, br.xfer_files, br.xfer_bytes, br.is_custodial, br.user_group, replica_time_create, replica_time_update
 ```
 
 Here is an example of rows from HDFS
