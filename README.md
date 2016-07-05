@@ -41,6 +41,11 @@ Here is an example of rows from HDFS
 1466560216.000000000000000000000000000002,/LogMonitor/Run2012D-v1/RAW,557315,y,1348765642.50834,null,/LogMonitor/Run2012D-v1/RAW#5810fa64-2ff7-11e2-9d5d-842b2b4671d8,3970074,1,862222,n,1353075127.37014,1353076085.29089,T0_CH_CERN_MSS,2,n,0,0,1,862222,1,862222,0,0,y,18,1353075127,1353336461.59835
 ```
 
+An example csv file with 10k entries is here:
+
+https://github.com/vkuznet/CMSSparkExamples/tree/master/phedex
+
+
 ### Queries of interest
 
 CMS Dataset names follow this convention:
@@ -55,3 +60,9 @@ https://github.com/dmwm/PHEDEX/blob/master/Contrib/datavolume_by_group_node_era_
 
 You may reimplement this against HDFS adding the time evolution.
 You may then extend the queries to different/more generic groupings.
+
+### Code examples
+
+Example code to perform queries against block replica data on HDFS:
+
+https://github.com/vkuznet/CMSSparkExamples/tree/master/phedex
