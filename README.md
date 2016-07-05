@@ -43,8 +43,7 @@ Here is an example of rows from HDFS
 
 An example csv file with 10k entries is here:
 
-https://github.com/vkuznet/CMSSparkExamples/tree/master/phedex
-
+https://github.com/nikmagini/PhEDEx-replicamonitoring/blob/master/data/2016-07-05-block-replicas-sample
 
 ### Queries of interest
 
