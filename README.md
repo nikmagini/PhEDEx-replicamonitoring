@@ -45,6 +45,20 @@ An example csv file with 10k entries is here:
 
 https://github.com/nikmagini/PhEDEx-replicamonitoring/blob/master/data/2016-07-05-block-replicas-sample
 
+### Additional PhEDEx data
+
+The PhEDEx group definitions are found here on HDFS:
+
+/user/magini/PhEDEx/phedex-groups.csv
+
+The schema is user_group_id, user_group_name
+
+The PhEDEx node definitions are found here on HDFS:
+
+/user/magini/PhEDEx/phedex-groups.csv
+
+The schema is node_id, node_name, node_kind, node_technology
+
 ### Queries of interest
 
 CMS Dataset names follow this convention:
