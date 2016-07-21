@@ -28,9 +28,9 @@ from datetime import datetime as dt
 GROUP_CSV_PATH = "additional_data/phedex_groups.csv"												# user group names
 NODE_CSV_PATH = "additional_data/phedex_node_kinds.csv"												# node kinds
 
-LAMBDAS = ["sumf"] 																					# supported aggregation functions
+LAMBDAS = ["sumf", "minf", "maxf"] 																	# supported aggregation functions
 GROUPKEYS = ["now", "dataset_name", "block_name", "node_name", "br_is_custiodial", "br_user_group",
-			"data_tier", "acquisition_era", "node_kind"]											# supported group key values
+			"data_tier", "acquisition_era", "node_kind", "now_sec"]											# supported group key values
 GROUPRES = ["block_files", "block_bytes", "br_src_files", "br_src_bytes", "br_dest_files", 
 			"br_dest_bytes", "br_node_files", "br_node_bytes", "br_xfer_files", "br_xfer_bytes"] 	# supported group result values
 
@@ -100,9 +100,17 @@ class LambdaBuilder():
 	def sumf(self):
 		return lambda x, y : map(sum, zip(x, y))
 
+	# min lambda
+	def minf(self):
+		return lambda x, y : map(min, zip(x, y))
+
+	# max lambda
+	def maxf(self):
+		return lambda x, y : map(max, zip(x, y))
+
 
 def headers():
-	names = """now, dataset_name, dataset_id, dataset_is_open, dataset_time_create, dataset_time_update,block_name, block_id, block_files, block_bytes, block_is_open, block_time_create, block_time_update,node_name, node_id, br_is_active, br_src_files, br_src_bytes, br_dest_files, br_dest_bytes,br_node_files, br_node_bytes, br_xfer_files, br_xfer_bytes, br_is_custodial, br_user_group_id, replica_time_create, replica_time_updater, br_user_group, node_kind, acquisition_era, data_tier"""
+	names = """now_sec, dataset_name, dataset_id, dataset_is_open, dataset_time_create, dataset_time_update,block_name, block_id, block_files, block_bytes, block_is_open, block_time_create, block_time_update,node_name, node_id, br_is_active, br_src_files, br_src_bytes, br_dest_files, br_dest_bytes,br_node_files, br_node_bytes, br_xfer_files, br_xfer_bytes, br_is_custodial, br_user_group_id, replica_time_create, replica_time_updater, br_user_group, node_kind, acquisition_era, data_tier, now"""
 	return [n.strip() for n in names.split(',')]
 
 # checks if value is empty
@@ -188,9 +196,8 @@ def getFileList(basedir, fromdate, todate):
 		if matching:
 			dirdate_dic[di] = dt.strptime(matching.group(1), "%Y-%m-%d")
 
-	# if files are not in hdfs --> return [ basedir + k for k, v in dirdate_dic.items() if v >= fromdate and v <= todate]	  
-	return [k for k, v in dirdate_dic.items() if v >= fromdate and v <= todate]
-	
+	# if files are not in hdfs --> return [ basedir + k for k, v in dirdate_dic.items() if v >= fromdate and v <= todate]	
+	return [k for k, v in dirdate_dic.items() if v >= fromdate and v <= todate]		
 
 #########################################################################################################################################
 
@@ -210,9 +217,9 @@ def main():
 		rdd = sc.textFile(opts.fname).map(lambda line: line.split(","))
 	elif opts.basedir:
 		files = getFileList(opts.basedir, opts.fromdate, opts.todate)
-		msg = "Between dates %s and %s found %d files" % (opts.fromdate, opts.todate, len(files))
+		msg = "Between dates %s and %s found %d directories" % (opts.fromdate, opts.todate, len(files))
 		print msg
-		rdd = sc.union([sc.textFile(file_path).map(lambda line: line.split(",")) for file_path in files])		
+		rdd = sc.union([sc.textFile(file_path).map(lambda line: line.split(",")) for file_path in files])
 	else:
 		raise ValueError("File or directory not specified. Specify fname or basedir parameters.")
 
@@ -220,15 +227,17 @@ def main():
 	groupdic, nodedic = getJoinDic()
 
 	pattern = re.compile(r""" ^/[^/]*                         # PrimaryDataset
-		     			 /(?P<AcquisitionEra>[^/]*)-[^/]*     # AcquisitionEra-ProcessingEra
+		     			 /(?P<AcquisitionEra>[^/^-]*)-[^/]*   # AcquisitionEra-ProcessingEra
                    	     /(?P<DataTier>[^/]*)$                # DataTier """, re.X)			# compile is used for efficiency as regex will be used many times   
 	groups = ["AcquisitionEra", "DataTier"]
 
 	headerarr = headers()
 	dname_index = headerarr.index("dataset_name")
 	gid_index = headerarr.index("br_user_group_id")
-	nid_index = headerarr.index("node_id") 
-	nrd = rdd.map(lambda r: (r + [groupdic[r[gid_index]]] + [nodedic[r[nid_index]]] + splitToGroups(r[dname_index], pattern, groups))) 
+	nid_index = headerarr.index("node_id")
+	now_index = headerarr.index("now_sec")
+	nrd = rdd.map(lambda r: (r + [groupdic[r[gid_index]]] + [nodedic[r[nid_index]]] + splitToGroups(r[dname_index], pattern, groups) +\
+							 [float(r[now_index]) / 86400] ))	# casting to days
 
     # create a dataframe out of RDD
 	pdf = nrd.toDF(headers())
@@ -257,7 +266,9 @@ def main():
 			.withColumn("br_xfer_bytes_tmp", pdf.br_xfer_bytes.cast(DoubleType()))\
 			.drop("br_xfer_bytes").withColumnRenamed("br_xfer_bytes_tmp", "br_xfer_bytes")\
 			.withColumn("br_xfer_files_tmp", pdf.br_xfer_files.cast(IntegerType()))\
-			.drop("br_xfer_files").withColumnRenamed("br_xfer_files_tmp", "br_xfer_files") 
+			.drop("br_xfer_files").withColumnRenamed("br_xfer_files_tmp", "br_xfer_files")\
+			.withColumn("now_tmp", pdf.now.cast(IntegerType()))\
+			.drop("now").withColumnRenamed("now_tmp", "now")  
 
     # dynamically build lambdas
 	lambda_builder = LambdaBuilder(LAMBDAS, GROUPKEYS, GROUPRES)
