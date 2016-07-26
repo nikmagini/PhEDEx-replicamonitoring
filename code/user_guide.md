@@ -4,7 +4,7 @@
 
 ### fname
 
-Fname is used fo specifying one input data file in hdfs. If not specified assumption is made that user uses script in multi-file mode, so the parameter basedir expectedd to be defined. If none of these parameters (fname, basedir) are defined user gets an error.
+Fname is used fo specifying one input data file in hdfs. If not specified assumption is made that user uses script in multi-file mode, so the parameter basedir expected to be defined. If none of these parameters (fname, basedir) are defined user gets an error.
 
 ### fout
 
@@ -24,27 +24,27 @@ Tdate is used for specifying date until which hdfs files in basedir will be proc
 
 ### keys
 
-Keys is used for specifying key fields for group operation. Keys is expected to be written in csv manner. If not - user gets an error. If parameter is not set - default value is set (dataset_name, node_name). Possible values for keys:
+Keys are used for specifying key fields for group operation. Keys are expected to be written in csv manner. If not - user gets an error. If parameter is not set - default value is set (dataset_name, node_name). Possible values for keys:
 
-'''
+```
 now_sec, now, dataset_name, block_name, node_name, br_is_custiodial, br_user_group, data_tier, acquisition_era, node_kind
-'''
+```
 
 ### results
 
-Keys is used for specifying result fields for group operation. Results is expected to be written in csv manner. If not - user gets an error. If parameter is not set - default value is set (block_files, block_bytes). Possible values for results:
+Results are used for specifying result fields for group operation. Results are expected to be written in csv manner. If not - user gets an error. If parameter is not set - default value is set (block_files, block_bytes). Possible values for results:
 
-'''
+```
 block_files, block_bytes, br_src_files, br_src_bytes, br_dest_files, br_dest_bytes, br_node_files, br_node_bytes, br_xfer_files, br_xfer_bytes
-'''
+```
 
 ### aggregations
 
-Aggregatios is used for specifying aggregation function for group operation. If the same aggregation function should be used fo all results columns then it is enough to specify one aggregation function. If user wants to specify different aggregation functions for different columns then aggregations is expected to be written in csv manner and in the exact order as results were specified. If parameter is not set - default value is set (sum) for all results elements. Possible values for aggregations:
+Aggregations are used for specifying aggregation functions for group operation. If the same aggregation function should be used fo all results columns then it is enough to specify one aggregation function. If user wants to specify different aggregation functions for different columns then aggregations is expected to be written in csv manner and in the exact order as results were specified. If parameter is not set - default value is set (sum) for all results elements. Possible values for aggregations:
 
-'''
+```
 sum, count, min, max, first, last, mean
-'''
+```
 
 ### order
 
@@ -63,7 +63,7 @@ verbose is used for printing dataframes schema during data processing.
 Yarn is used for activitacing Yarn cluster management technology.
 
 
-'''
+```
 bash pbr.sh \
 		--basedir hdfs:///project/awg/cms/phedex/block-replicas-snapshots/csv/ \
 		--fromdate 2015-08-04 \
@@ -90,5 +90,5 @@ bash pbr.sh \
 #-- RAW       - CMSSW_1_6_7     - 0                  - 12
 #-- RAW       - null            - 0                  - 48
 #--------------------------------------------------------------------------
-'''
+```
 
