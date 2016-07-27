@@ -54,9 +54,13 @@ Order is used for specifying sort order for aggregated data. Order is expected t
 
 Asc is used for specifying sort order for order columns. Asc is expected to be written in csv manner and should contain only 1,0 (1 - ascending, 0 -descending). Symbols 1,0 should appear in the exact same order as columns in order parameter. This parameter goes along with parameter ord. If parameter is not set - all columns will be sorted ascending. 
 
+### header
+
+Header is used for writing column names of aggregation columns in the frist line of destination csv file. It should used only with fout parameter, otherwise it has no effect.
+
 ### verbose
 
-verbose is used for printing dataframes schema during data processing.
+Verbose is used for printing dataframes schema during data processing.
 
 ### yarn
 
@@ -74,6 +78,7 @@ bash pbr.sh \
 		--order data_tier,br_dest_files \
 		--asc 0,1 \
 		--yarn
+		#--header
 		#--fout hdfs:///user/arepecka/ReplicaMonitoring
 		#--verbose 
 		#--fname hdfs:///project/awg/cms/phedex/block-replicas-snapshots/csv/time=2016-07-09_03h07m28s 
