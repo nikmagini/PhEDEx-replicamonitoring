@@ -2,7 +2,7 @@
 
 ## Week 4
 
---Aggregations can be defined to every result column seperately. If the same aggregation function should be used fo all results columns then it is enough to specify one aggregation function. If user wants to specify different aggregation functions for different columns then aggregations is expected to be written in csv manner and in the exact order as results were specified. If parameter is not set - default value is set (sum) for all results elements.
+-Aggregations can be defined to every result column seperately. If the same aggregation function should be used fo all results columns then it is enough to specify one aggregation function. If user wants to specify different aggregation functions for different columns then aggregations is expected to be written in csv manner and in the exact order as results were specified. If parameter is not set - default value is set (sum) for all results elements.
 - The set of aggregation functions was espanded to:
 ```
 sum, count, min, max, first, last, mean
@@ -35,5 +35,5 @@ ndf = pdf.withColumn("br_user_group", groupf(pdf.br_user_group_id)) \
 		 .withColumn("acquisition_era", when(regexp_extract(pdf.dataset_name, acquisition_era_reg, 1) == "", lit("null")).otherwise(regexp_extract(pdf.dataset_name, acquisition_era_reg, 1))) \
 		 .withColumn("data_tier", when(regexp_extract(pdf.dataset_name, data_tier_reg, 1) == "", lit("null")).otherwise(regexp_extract(pdf.dataset_name, data_tier_reg, 1))) \
 ```
-- Improved script performance. ~30 snapshots are processed in 4 minutes (using yarn-client)
+- Improved script performance. ~30 snapshots are processed in approximately 5 minutes (using yarn-client)
 - Started developing delta function.
