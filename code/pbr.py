@@ -16,7 +16,9 @@ import argparse
 
 from pyspark import SparkContext
 from pyspark.sql import SQLContext
-from pyspark.sql.types import DoubleType, IntegerType
+from pyspark.sql import DataFrame
+from pyspark.sql.types import DoubleType, IntegerType, StructType, StructField, StringType
+from pyspark.sql.functions import udf, from_unixtime, date_format, regexp_extract, when, lit
 
 import re
 from datetime import datetime as dt
@@ -61,65 +63,52 @@ class OptionParser():
 			dest="order", default="", help="Column names (csv) for ordering data")
 		self.parser.add_argument("--asc", action="store",
 			dest="asc", default="", help="1 or 0 (csv) for ordering columns (0-desc, 1-asc)")
+		self.parser.add_argument("--header", action="store_true",
+			dest="header", default=False, help="Print header in the first file of csv")
 
-def headers():
-	names = """now_sec, dataset_name, dataset_id, dataset_is_open, dataset_time_create, dataset_time_update,block_name, block_id, block_files, block_bytes, block_is_open, block_time_create, block_time_update,node_name, node_id, br_is_active, br_src_files, br_src_bytes, br_dest_files, br_dest_bytes,br_node_files, br_node_bytes, br_xfer_files, br_xfer_bytes, br_is_custodial, br_user_group_id, replica_time_create, replica_time_updater, br_user_group, node_kind, acquisition_era, data_tier, now"""
-	return [n.strip() for n in names.split(',')]
-
-# checks if value is empty
-def isEmptyValue(value):
-	return value == "" or value == "null" or not value
-
-# checks if given data is empty
-def isEmpty(data):
-	print(data)
-	if hasattr(data, '__iter__'):
-		return any(isEmptyValue(element) for element in data)
-	else:
-		return isEmptyValue(data) 
-
-# converts key value tuples to string representation
-def toStringVal(item):
-	return ','.join(str(i) for i in item) if hasattr(item, '__iter__') else str(item)
-
-# prints aggregation results
-def printVal(rdd, count, headers):   
-	if headers:
-		print headers
-
-	iteration = 0
-	for item in rdd.collect():
-		print toStringVal(item)
-		iteration += 1
-		if iteration > count:
-			break    
-
-# splits string into given groups by compiled pattern
-def splitToGroups(src, pattern, pgroups):
-	matching = pattern.search(src)	
-
-	output = []
-	if matching:
-		for pgroup in pgroups:
-			output.append(matching.group(pgroup))
-	else:
-		output = ["null"] * len(pgroups)
-
-	return output
+def schema():
+	return StructType([StructField("now_sec", DoubleType(), True),
+		 			 StructField("dataset_name", StringType(), True),
+ 					 StructField("dataset_id", IntegerType(), True),
+	 			 	 StructField("dataset_is_open", StringType(), True),
+		 			 StructField("dataset_time_create", DoubleType(), True),
+		 			 StructField("dataset_time_update", DoubleType(), True),
+		 			 StructField("block_name", StringType(), True), 
+		 			 StructField("block_id", IntegerType(), True),
+		 			 StructField("block_files", IntegerType(), True),
+		 			 StructField("block_bytes", DoubleType(), True),
+		 			 StructField("block_is_open", StringType(), True),
+		 			 StructField("block_time_create", DoubleType(), True),
+		 			 StructField("block_time_update", DoubleType(), True),
+		 			 StructField("node_name", StringType(), True),
+					 StructField("node_id", IntegerType(), True),
+		 			 StructField("br_is_active", StringType(), True),
+		 			 StructField("br_src_files", IntegerType(), True),
+		 			 StructField("br_src_bytes", DoubleType(), True),
+		 			 StructField("br_dest_files", IntegerType(), True),
+		 			 StructField("br_dest_bytes", DoubleType(), True),
+		 			 StructField("br_node_files", IntegerType(), True),
+		 			 StructField("br_node_bytes", DoubleType(), True),
+		 			 StructField("br_xfer_files", IntegerType(), True),
+		 			 StructField("br_xfer_bytes", DoubleType(), True),
+		 			 StructField("br_is_custodial", StringType(), True),
+		 			 StructField("br_user_group_id", IntegerType(), True),
+		 			 StructField("replica_time_create", DoubleType(), True),
+		 			 StructField("replica_time_updater", DoubleType(), True)])
 
 # get dictionaries needed for joins
 def getJoinDic():   
-	groupdic = {"null" : "null"}
+	groupdic = {None : "null"}
 	with open(GROUP_CSV_PATH) as fg:
 		for line in fg.read().splitlines():
 			(gid, gname) = line.split(',')
-			groupdic[gid] = gname
+			groupdic[int(gid)] = gname
 
-	nodedic = {"null" : "null"}
+	nodedic = {None : "null"}
 	with open(NODE_CSV_PATH) as fn:
 		for line in fn.read().splitlines():
 			data = line.split(',')
-			nodedic[data[0]] = data[2] 
+			nodedic[int(data[0])] = data[2] 
 
 	return groupdic, nodedic  
 
@@ -143,7 +132,7 @@ def getFileList(basedir, fromdate, todate):
 			dirdate_dic[di] = dt.strptime(matching.group(1), "%Y-%m-%d")
 
 	# if files are not in hdfs --> return [ basedir + k for k, v in dirdate_dic.items() if v >= fromdate and v <= todate]
-	return [k for k, v in dirdate_dic.items() if v >= fromdate and v <= todate]		
+	return [k for k, v in dirdate_dic.items() if v >= fromdate and v <= todate]	
 
 # validate aggregation parameters
 def validateAggregationParams(keys, res, agg, order):
@@ -165,7 +154,7 @@ def validateAggregationParams(keys, res, agg, order):
 		raise NotImplementedError(msg)
 
 # validate dates and fill default values		
-def validateDates(fromdate, todate):
+def defDates(fromdate, todate):
 	if not fromdate or not todate:
 		fromdate = dt.strftime(dt.now(), "%Y-%m-%d")
 		todate = dt.strftime(dt.now(), "%Y-%m-%d")
@@ -173,16 +162,18 @@ def validateDates(fromdate, todate):
 
 # creating results and aggregation dictionary
 def zipResultAgg(res, agg):
-	if len(res) == len(agg):
-		return dict(zip(res, agg))
-	else:
-		return dict(zip(res, agg * len(res)))
+	return dict(zip(res, agg)) if len(res) == len(agg) else dict(zip(res, agg * len(res)))
 
 # form ascennding and order arrays according aggregation functions
 def formOrdAsc(order, asc, resAgg_dic):
 	asc = map(int, asc) if len(order) == len(asc) else [1] * len(order)
 	orderN = [resAgg_dic[orde] + "(" + orde + ")" if orde in resAgg_dic.keys() else orde for orde in order] 
 	return orderN, asc
+
+# unions all files in one dataframe
+def unionAll(dfs):
+	return reduce(DataFrame.unionAll, dfs)
+
 
 #########################################################################################################################################
 
@@ -197,69 +188,48 @@ def main():
 		sc.setLogLevel("ERROR")
 	sqlContext = SQLContext(sc)
 
+	schema_def = schema()
+
     # read given file(s) into RDD
 	if opts.fname:
-		rdd = sc.textFile(opts.fname).map(lambda line: line.split(","))
+		pdf = sqlContext.read.format('com.databricks.spark.csv')\
+						.options(treatEmptyValuesAsNulls='true', nullValue='null')\
+						.load(opts.fname, schema = schema_def)
 	elif opts.basedir:
-		fromdate, todate = validateDates(opts.fromdate, opts.todate)
+		fromdate, todate = defDates(opts.fromdate, opts.todate)
 		files = getFileList(opts.basedir, fromdate, todate)
 		msg = "Between dates %s and %s found %d directories" % (fromdate, todate, len(files))
 		print msg
 
 		if not files:
 			return
-		rdd = sc.union([sc.textFile(file_path).map(lambda line: line.split(",")) for file_path in files])
+		pdf = unionAll([sqlContext.read.format('com.databricks.spark.csv')
+						.options(treatEmptyValuesAsNulls='true', nullValue='null')\
+						.load(file_path, schema = schema_def) \
+						for file_path in files])
 	else:
 		raise ValueError("File or directory not specified. Specify fname or basedir parameters.")
-
-	# parsing additional data (to given data adding: group name, node kind, acquisition era, data tier, now days)
+	
+	# parsing additional data (to given data adding: group name, node kind, acquisition era, data tier, now date)
 	groupdic, nodedic = getJoinDic()
+	acquisition_era_reg = r"^/[^/]*/([^/^-]*)-[^/]*/[^/]*$"	
+	data_tier_reg = r"^/[^/]*/[^/^-]*-[^/]*/([^/]*)$"
+	groupf = udf(lambda x: groupdic[x], StringType())
+	nodef = udf(lambda x: nodedic[x], StringType())
+	acquisitionf = udf(lambda x: regexp_extract(x, acquisition_era_reg, 1) or "null")
+	datatierf = udf(lambda x: regexp_extract(x, data_tier_reg, 1) or "null")
 
-	pattern = re.compile(r""" ^/[^/]*                         # PrimaryDataset
-		     			 /(?P<AcquisitionEra>[^/^-]*)-[^/]*   # AcquisitionEra-ProcessingEra
-                   	     /(?P<DataTier>[^/]*)$                # DataTier """, re.X)			# compile is used for efficiency as regex will be used many times   
-	groups = ["AcquisitionEra", "DataTier"]
+	ndf = pdf.withColumn("br_user_group", groupf(pdf.br_user_group_id)) \
+			 .withColumn("node_kind", nodef(pdf.node_id)) \
+			 .withColumn("now", from_unixtime(pdf.now_sec, "YYYY-MM-dd")) \
+			 .withColumn("acquisition_era", when(regexp_extract(pdf.dataset_name, acquisition_era_reg, 1) == "", lit("null")).otherwise(regexp_extract(pdf.dataset_name, acquisition_era_reg, 1))) \
+			 .withColumn("data_tier", when(regexp_extract(pdf.dataset_name, data_tier_reg, 1) == "", lit("null")).otherwise(regexp_extract(pdf.dataset_name, data_tier_reg, 1)))
 
-	head_arr = headers()
-	dname_index = head_arr.index("dataset_name")
-	gid_index = head_arr.index("br_user_group_id")
-	nid_index = head_arr.index("node_id")
-	now_index = head_arr.index("now_sec")
-	nrd = rdd.map(lambda r: (r + [groupdic[r[gid_index]]] + \
-								 [nodedic[r[nid_index]]] + \
-								 splitToGroups(r[dname_index], pattern, groups) + \
-							 	 [float(r[now_index]) / 86400] ))
-
-    # create a dataframe out of RDD
-	pdf = nrd.toDF(head_arr)
+	# print dataframe schema
 	if opts.verbose:
-		pdf.show()
-		print("pdf data type", type(pdf))
-		pdf.printSchema()
-
-    # cast columns to correct data types
-	ndf = pdf.withColumn("block_bytes_tmp", pdf.block_bytes.cast(DoubleType()))\
-			.drop("block_bytes").withColumnRenamed("block_bytes_tmp", "block_bytes")\
-			.withColumn("block_files_tmp", pdf.block_files.cast(IntegerType()))\
-			.drop("block_files").withColumnRenamed("block_files_tmp", "block_files")\
-			.withColumn("br_src_bytes_tmp", pdf.br_src_bytes.cast(DoubleType()))\
-			.drop("br_src_bytes").withColumnRenamed("br_src_bytes_tmp", "br_src_bytes")\
-			.withColumn("br_src_files_tmp", pdf.br_src_files.cast(IntegerType()))\
-			.drop("br_src_files").withColumnRenamed("br_src_files_tmp", "br_src_files")\
-			.withColumn("br_dest_bytes_tmp", pdf.br_dest_bytes.cast(DoubleType()))\
-			.drop("br_dest_bytes").withColumnRenamed("br_dest_bytes_tmp", "br_dest_bytes")\
-			.withColumn("br_dest_files_tmp", pdf.br_dest_files.cast(IntegerType()))\
-			.drop("br_dest_files").withColumnRenamed("br_dest_files_tmp", "br_dest_files")\
-			.withColumn("br_node_bytes_tmp", pdf.br_node_bytes.cast(DoubleType()))\
-			.drop("br_node_bytes").withColumnRenamed("br_node_bytes_tmp", "br_node_bytes")\
-			.withColumn("br_node_files_tmp", pdf.br_node_files.cast(IntegerType()))\
-			.drop("br_node_files").withColumnRenamed("br_node_files_tmp", "br_node_files")\
-			.withColumn("br_xfer_bytes_tmp", pdf.br_xfer_bytes.cast(DoubleType()))\
-			.drop("br_xfer_bytes").withColumnRenamed("br_xfer_bytes_tmp", "br_xfer_bytes")\
-			.withColumn("br_xfer_files_tmp", pdf.br_xfer_files.cast(IntegerType()))\
-			.drop("br_xfer_files").withColumnRenamed("br_xfer_files_tmp", "br_xfer_files")\
-			.withColumn("now_tmp", pdf.now.cast(IntegerType()))\
-			.drop("now").withColumnRenamed("now_tmp", "now")
+		ndf.show()
+		print("pdf data type", type(ndf))
+		ndf.printSchema()
 
     # process aggregation parameters
 	keys = [key.lower().strip() for key in opts.keys.split(',')]
@@ -281,11 +251,12 @@ def main():
 
 	# output results
 	if opts.fout:
-		print(toStringVal(aggres.schema.names))	# print schema that was created dynamically
-		lines = aggres.map(toStringVal)
-		lines.saveAsTextFile(opts.fout)
+		if opts.header:
+			aggres.write.format('com.databricks.spark.csv').options(header = 'true').save(opts.fout)
+		else:
+			aggres.write.format('com.databricks.spark.csv').save(opts.fout)
 	else:
-		printVal(aggres, 15, toStringVal(aggres.schema.names))
+		aggres.show(15)
 
 if __name__ == '__main__':
 	main()
