@@ -1,3 +1,7 @@
+#!/bin/sh
+# Author: Aurimas Repecka <aurimas.repecka AT gmail [DOT] com>
+# A wrapper script to submit spark job with pbr.sh script
+
 bash pbr.sh --yarn \
 		--basedir hdfs:///project/awg/cms/phedex/block-replicas-snapshots/csv/ \
 		--fromdate 2015-08-04 \
