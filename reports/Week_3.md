@@ -1,6 +1,6 @@
 # Weekly Reports 
 
-## Week 3 (in progress)
+## Week 3
 
 - Added new aggregation functions: minf, maxf (sumf is already existing)
 - Now dataframe element was split into: now_sec(unix timestamp in seconds) and now(unix timestamp in days). Both elements are allowed as grouping keys

@@ -7,7 +7,6 @@ Author     		: Aurimas Repecka <aurimas.repecka AT gmail dot com>
 Based On Work By   	: Valentin Kuznetsov <vkuznet AT gmail dot com>
 Description:
     http://stackoverflow.com/questions/29936156/get-csv-to-spark-dataframe
-    https://databricks.gitbooks.io/databricks-spark-knowledge-base/content/best_practices/prefer_reducebykey_over_groupbykey.html
 """
 
 # system modules
@@ -17,9 +16,9 @@ import argparse
 
 from pyspark import SparkContext
 from pyspark.sql import SQLContext
-from pyspark.sql.functions import lit
-from pyspark.sql.functions import split as pysplit
-from pyspark.sql.types import DoubleType, IntegerType
+from pyspark.sql import DataFrame
+from pyspark.sql.types import DoubleType, IntegerType, StructType, StructField, StringType
+from pyspark.sql.functions import udf, from_unixtime, date_format, regexp_extract, when, lit
 
 import re
 from datetime import datetime as dt
@@ -28,9 +27,9 @@ from datetime import datetime as dt
 GROUP_CSV_PATH = "additional_data/phedex_groups.csv"												# user group names
 NODE_CSV_PATH = "additional_data/phedex_node_kinds.csv"												# node kinds
 
-LAMBDAS = ["sumf", "minf", "maxf"] 																	# supported aggregation functions
+AGGREGATIONS = ["sum", "count", "min", "max", "first", "last", "mean"]  							# supported aggregation functions
 GROUPKEYS = ["now", "dataset_name", "block_name", "node_name", "br_is_custiodial", "br_user_group",
-			"data_tier", "acquisition_era", "node_kind", "now_sec"]											# supported group key values
+			"data_tier", "acquisition_era", "node_kind", "now_sec"]									# supported group key values
 GROUPRES = ["block_files", "block_bytes", "br_src_files", "br_src_bytes", "br_dest_files", 
 			"br_dest_bytes", "br_node_files", "br_node_bytes", "br_xfer_files", "br_xfer_bytes"] 	# supported group result values
 
@@ -44,9 +43,6 @@ class OptionParser():
 		msg = 'Output file on HDFS, e.g. hdfs:///path/data/output.file'
 		self.parser.add_argument("--fout", action="store",
 			dest="fout", default="", help=msg)
-		msg = 'specify order key, either by dataset or by site'
-		self.parser.add_argument("--order", action="store",
-			dest="order", default="dataset", help=msg)
 		self.parser.add_argument("--verbose", action="store_true",
 			dest="verbose", default=False, help="Be verbose")
 		self.parser.add_argument("--yarn", action="store_true",
@@ -57,118 +53,62 @@ class OptionParser():
 			dest="fromdate", default="", help="Filter by start date")
 		self.parser.add_argument("--todate", action="store",
 			dest="todate", default="", help="Filter by end date")
-		self.parser.add_argument("--empty", action="store_true",
-			dest="empty", default=False, help="Show records if empty one or more key values")
 		self.parser.add_argument("--keys", action="store",
 			dest="keys", default="dataset_name, node_name", help="Names (csv) of group keys to use, supported keys: %s" % GROUPKEYS)
 		self.parser.add_argument("--results", action="store",
 			dest="results", default="block_files, block_bytes", help="Names (csv) of group results to use, supported results: %s" % GROUPRES)
-		self.parser.add_argument("--lambdaf", action="store",
-			dest="lambdaf", default="sumf", help="Name of lambda function to use, supported lambdas: %s" % LAMBDAS)
+		self.parser.add_argument("--aggregations", action="store",
+			dest="aggregations", default="sum", help="Names (csv) of aggregation functions to use, supported aggregations: %s" % AGGREGATIONS)
+		self.parser.add_argument("--order", action="store",
+			dest="order", default="", help="Column names (csv) for ordering data")
+		self.parser.add_argument("--asc", action="store",
+			dest="asc", default="", help="1 or 0 (csv) for ordering columns (0-desc, 1-asc)")
+		self.parser.add_argument("--header", action="store_true",
+			dest="header", default=False, help="Print header in the first file of csv")
 
-# class for dynamically building lambdas
-class LambdaBuilder():
-	def __init__(self, lambdas, keys, res):
-		self.lambdas = set(lambdas)
-		self.keys = set(keys)
-		self.res = set(res)
-
-	# dynamically build map lambda
-	def mapf(self, keys, res):
-		unsup_keys = set(keys).difference(set(self.keys)) 
-		unsup_res = set(res).difference(set(self.res))
-		
-		msg = ""
-		if unsup_keys:
-			msg += 'Group key(s) = "%s" are not supported. ' % unsup_keys
-		if unsup_res:
-			msg += 'Group result(s) = "%s" are not supported. ' % unsup_res
-		if msg:
-			raise NotImplementedError(msg)
-
-		return lambda r: (tuple([getattr(r, k) for k in keys]), tuple([getattr(r, k) for k in res]))
-
-	# dynamically build reduce lambda
-	def reducef(self, lambdaf):
-		if lambdaf not in self.lambdas:
-			msg = 'Lambda function = "%s" is not supported. ' % lambdaf
-			raise NotImplementedError(msg)
-
-		return getattr(self, lambdaf)()
-	
-	# sum lambda
-	def sumf(self):
-		return lambda x, y : map(sum, zip(x, y))
-
-	# min lambda
-	def minf(self):
-		return lambda x, y : map(min, zip(x, y))
-
-	# max lambda
-	def maxf(self):
-		return lambda x, y : map(max, zip(x, y))
-
-
-def headers():
-	names = """now_sec, dataset_name, dataset_id, dataset_is_open, dataset_time_create, dataset_time_update,block_name, block_id, block_files, block_bytes, block_is_open, block_time_create, block_time_update,node_name, node_id, br_is_active, br_src_files, br_src_bytes, br_dest_files, br_dest_bytes,br_node_files, br_node_bytes, br_xfer_files, br_xfer_bytes, br_is_custodial, br_user_group_id, replica_time_create, replica_time_updater, br_user_group, node_kind, acquisition_era, data_tier, now"""
-	return [n.strip() for n in names.split(',')]
-
-# checks if value is empty
-def isEmptyValue(value):
-	return value == "" or value == "null" or not value
-
-# checks if given data is empty
-def isEmpty(data):
-	if hasattr(data, '__iter__'):
-		return any(isEmptyValue(element) for element in data)
-	else:
-		return isEmptyValue(data) 
-
-# converts key value tuples to string representation
-def toStringKeyVal(item, is_print = False):
-	key, value = item
-	keystr = ','.join(str(k) for k in key) if hasattr(key, '__iter__') else str(key)
-	valuestr = ','.join(str(v) for v in value) if hasattr(value, '__iter__') else str(value)
-	return keystr + '     ' + valuestr if is_print else keystr + ',' + valuestr
-
-# prints aggregation results
-def printKeyVal(rdd, count, headers):   
-	if headers:
-		print headers
-
-	iteration = 0
-	for item in rdd.collect():
-		print toStringKeyVal(item, True)
-		iteration += 1
-		if iteration > count:
-			break    
-
-# splits string into given groups by compiled pattern
-def splitToGroups(src, pattern, pgroups):
-	matching = pattern.search(src)	
-
-	output = []
-	if matching:
-		for pgroup in pgroups:
-			output.append(matching.group(pgroup))
-	else:
-		output = ["null"] * len(pgroups)
-
-	return output
+def schema():
+	return StructType([StructField("now_sec", DoubleType(), True),
+		 			 StructField("dataset_name", StringType(), True),
+ 					 StructField("dataset_id", IntegerType(), True),
+	 			 	 StructField("dataset_is_open", StringType(), True),
+		 			 StructField("dataset_time_create", DoubleType(), True),
+		 			 StructField("dataset_time_update", DoubleType(), True),
+		 			 StructField("block_name", StringType(), True), 
+		 			 StructField("block_id", IntegerType(), True),
+		 			 StructField("block_files", IntegerType(), True),
+		 			 StructField("block_bytes", DoubleType(), True),
+		 			 StructField("block_is_open", StringType(), True),
+		 			 StructField("block_time_create", DoubleType(), True),
+		 			 StructField("block_time_update", DoubleType(), True),
+		 			 StructField("node_name", StringType(), True),
+					 StructField("node_id", IntegerType(), True),
+		 			 StructField("br_is_active", StringType(), True),
+		 			 StructField("br_src_files", IntegerType(), True),
+		 			 StructField("br_src_bytes", DoubleType(), True),
+		 			 StructField("br_dest_files", IntegerType(), True),
+		 			 StructField("br_dest_bytes", DoubleType(), True),
+		 			 StructField("br_node_files", IntegerType(), True),
+		 			 StructField("br_node_bytes", DoubleType(), True),
+		 			 StructField("br_xfer_files", IntegerType(), True),
+		 			 StructField("br_xfer_bytes", DoubleType(), True),
+		 			 StructField("br_is_custodial", StringType(), True),
+		 			 StructField("br_user_group_id", IntegerType(), True),
+		 			 StructField("replica_time_create", DoubleType(), True),
+		 			 StructField("replica_time_updater", DoubleType(), True)])
 
 # get dictionaries needed for joins
 def getJoinDic():   
-	groupdic = {"null" : "null"}
+	groupdic = {None : "null"}
 	with open(GROUP_CSV_PATH) as fg:
 		for line in fg.read().splitlines():
 			(gid, gname) = line.split(',')
-			groupdic[gid] = gname
+			groupdic[int(gid)] = gname
 
-	nodedic = {"null" : "null"}
+	nodedic = {None : "null"}
 	with open(NODE_CSV_PATH) as fn:
 		for line in fn.read().splitlines():
 			data = line.split(',')
-			nodedic[data[0]] = data[2] 
+			nodedic[int(data[0])] = data[2] 
 
 	return groupdic, nodedic  
 
@@ -176,12 +116,7 @@ def getJoinDic():
 def getFileList(basedir, fromdate, todate):
 	dirs = os.popen("hadoop fs -ls %s | sed '1d;s/  */ /g' | cut -d\  -f8" % basedir).read().splitlines()
 	# if files are not in hdfs --> dirs = os.listdir(basedir)
-
-	if not fromdate:
-		raise ValueError("Parameter fromdate not specified")
-	if not todate:
-		raise ValueError("Parameter todate not specified")
-
+	
 	try:
 		fromdate = dt.strptime(fromdate, "%Y-%m-%d")
 		todate = dt.strptime(todate, "%Y-%m-%d")
@@ -196,8 +131,49 @@ def getFileList(basedir, fromdate, todate):
 		if matching:
 			dirdate_dic[di] = dt.strptime(matching.group(1), "%Y-%m-%d")
 
-	# if files are not in hdfs --> return [ basedir + k for k, v in dirdate_dic.items() if v >= fromdate and v <= todate]	
-	return [k for k, v in dirdate_dic.items() if v >= fromdate and v <= todate]		
+	# if files are not in hdfs --> return [ basedir + k for k, v in dirdate_dic.items() if v >= fromdate and v <= todate]
+	return [k for k, v in dirdate_dic.items() if v >= fromdate and v <= todate]	
+
+# validate aggregation parameters
+def validateAggregationParams(keys, res, agg, order):
+	unsup_keys = set(keys).difference(set(GROUPKEYS)) 
+	unsup_res = set(res).difference(set(GROUPRES))
+	unsup_agg = set(agg).difference(set(AGGREGATIONS))
+	unsup_ord = set(order).difference(set(keys + res)) if order != [''] else None
+	
+	msg = ""
+	if unsup_keys:
+		msg += 'Group key(s) = "%s" are not supported. ' % toStringVal(unsup_keys)
+	if unsup_res:
+		msg += 'Group result(s) = "%s" are not supported. ' % toStringVal(unsup_res)
+	if unsup_agg:
+		msg += 'Aggregation function(s) = "%s" are not supported. ' % toStringVal(unsup_agg)
+	if unsup_ord:
+		msg += 'Order key(s) = "%s" are not available. ' % toStringVal(unsup_ord)
+	if msg:
+		raise NotImplementedError(msg)
+
+# validate dates and fill default values		
+def defDates(fromdate, todate):
+	if not fromdate or not todate:
+		fromdate = dt.strftime(dt.now(), "%Y-%m-%d")
+		todate = dt.strftime(dt.now(), "%Y-%m-%d")
+	return fromdate, todate
+
+# creating results and aggregation dictionary
+def zipResultAgg(res, agg):
+	return dict(zip(res, agg)) if len(res) == len(agg) else dict(zip(res, agg * len(res)))
+
+# form ascennding and order arrays according aggregation functions
+def formOrdAsc(order, asc, resAgg_dic):
+	asc = map(int, asc) if len(order) == len(asc) else [1] * len(order)
+	orderN = [resAgg_dic[orde] + "(" + orde + ")" if orde in resAgg_dic.keys() else orde for orde in order] 
+	return orderN, asc
+
+# unions all files in one dataframe
+def unionAll(dfs):
+	return reduce(DataFrame.unionAll, dfs)
+
 
 #########################################################################################################################################
 
@@ -212,84 +188,75 @@ def main():
 		sc.setLogLevel("ERROR")
 	sqlContext = SQLContext(sc)
 
+	schema_def = schema()
+
     # read given file(s) into RDD
 	if opts.fname:
-		rdd = sc.textFile(opts.fname).map(lambda line: line.split(","))
+		pdf = sqlContext.read.format('com.databricks.spark.csv')\
+						.options(treatEmptyValuesAsNulls='true', nullValue='null')\
+						.load(opts.fname, schema = schema_def)
 	elif opts.basedir:
-		files = getFileList(opts.basedir, opts.fromdate, opts.todate)
-		msg = "Between dates %s and %s found %d directories" % (opts.fromdate, opts.todate, len(files))
+		fromdate, todate = defDates(opts.fromdate, opts.todate)
+		files = getFileList(opts.basedir, fromdate, todate)
+		msg = "Between dates %s and %s found %d directories" % (fromdate, todate, len(files))
 		print msg
-		rdd = sc.union([sc.textFile(file_path).map(lambda line: line.split(",")) for file_path in files])
+
+		if not files:
+			return
+		pdf = unionAll([sqlContext.read.format('com.databricks.spark.csv')
+						.options(treatEmptyValuesAsNulls='true', nullValue='null')\
+						.load(file_path, schema = schema_def) \
+						for file_path in files])
 	else:
 		raise ValueError("File or directory not specified. Specify fname or basedir parameters.")
-
-	# parsing additional data (to given data adding: group name, node kind, acquisition era, data tier)
+	
+	# parsing additional data (to given data adding: group name, node kind, acquisition era, data tier, now date)
 	groupdic, nodedic = getJoinDic()
+	acquisition_era_reg = r"^/[^/]*/([^/^-]*)-[^/]*/[^/]*$"	
+	data_tier_reg = r"^/[^/]*/[^/^-]*-[^/]*/([^/]*)$"
+	groupf = udf(lambda x: groupdic[x], StringType())
+	nodef = udf(lambda x: nodedic[x], StringType())
+	acquisitionf = udf(lambda x: regexp_extract(x, acquisition_era_reg, 1) or "null")
+	datatierf = udf(lambda x: regexp_extract(x, data_tier_reg, 1) or "null")
 
-	pattern = re.compile(r""" ^/[^/]*                         # PrimaryDataset
-		     			 /(?P<AcquisitionEra>[^/^-]*)-[^/]*   # AcquisitionEra-ProcessingEra
-                   	     /(?P<DataTier>[^/]*)$                # DataTier """, re.X)			# compile is used for efficiency as regex will be used many times   
-	groups = ["AcquisitionEra", "DataTier"]
+	ndf = pdf.withColumn("br_user_group", groupf(pdf.br_user_group_id)) \
+			 .withColumn("node_kind", nodef(pdf.node_id)) \
+			 .withColumn("now", from_unixtime(pdf.now_sec, "YYYY-MM-dd")) \
+			 .withColumn("acquisition_era", when(regexp_extract(pdf.dataset_name, acquisition_era_reg, 1) == "", lit("null")).otherwise(regexp_extract(pdf.dataset_name, acquisition_era_reg, 1))) \
+			 .withColumn("data_tier", when(regexp_extract(pdf.dataset_name, data_tier_reg, 1) == "", lit("null")).otherwise(regexp_extract(pdf.dataset_name, data_tier_reg, 1)))
 
-	headerarr = headers()
-	dname_index = headerarr.index("dataset_name")
-	gid_index = headerarr.index("br_user_group_id")
-	nid_index = headerarr.index("node_id")
-	now_index = headerarr.index("now_sec")
-	nrd = rdd.map(lambda r: (r + [groupdic[r[gid_index]]] + [nodedic[r[nid_index]]] + splitToGroups(r[dname_index], pattern, groups) +\
-							 [float(r[now_index]) / 86400] ))	# casting to days
-
-    # create a dataframe out of RDD
-	pdf = nrd.toDF(headers())
+	# print dataframe schema
 	if opts.verbose:
-		pdf.show()
-		print("pdf data type", type(pdf))
-		pdf.printSchema()
+		ndf.show()
+		print("pdf data type", type(ndf))
+		ndf.printSchema()
 
-    # cast columns to correct data types
-	ndf = pdf.withColumn("block_bytes_tmp", pdf.block_bytes.cast(DoubleType()))\
-			.drop("block_bytes").withColumnRenamed("block_bytes_tmp", "block_bytes")\
-			.withColumn("block_files_tmp", pdf.block_files.cast(IntegerType()))\
-			.drop("block_files").withColumnRenamed("block_files_tmp", "block_files")\
-			.withColumn("br_src_bytes_tmp", pdf.br_src_bytes.cast(DoubleType()))\
-			.drop("br_src_bytes").withColumnRenamed("br_src_bytes_tmp", "br_src_bytes")\
-			.withColumn("br_src_files_tmp", pdf.br_src_files.cast(IntegerType()))\
-			.drop("br_src_files").withColumnRenamed("br_src_files_tmp", "br_src_files")\
-			.withColumn("br_dest_bytes_tmp", pdf.br_dest_bytes.cast(DoubleType()))\
-			.drop("br_dest_bytes").withColumnRenamed("br_dest_bytes_tmp", "br_dest_bytes")\
-			.withColumn("br_dest_files_tmp", pdf.br_dest_files.cast(IntegerType()))\
-			.drop("br_dest_files").withColumnRenamed("br_dest_files_tmp", "br_dest_files")\
-			.withColumn("br_node_bytes_tmp", pdf.br_node_bytes.cast(DoubleType()))\
-			.drop("br_node_bytes").withColumnRenamed("br_node_bytes_tmp", "br_node_bytes")\
-			.withColumn("br_node_files_tmp", pdf.br_node_files.cast(IntegerType()))\
-			.drop("br_node_files").withColumnRenamed("br_node_files_tmp", "br_node_files")\
-			.withColumn("br_xfer_bytes_tmp", pdf.br_xfer_bytes.cast(DoubleType()))\
-			.drop("br_xfer_bytes").withColumnRenamed("br_xfer_bytes_tmp", "br_xfer_bytes")\
-			.withColumn("br_xfer_files_tmp", pdf.br_xfer_files.cast(IntegerType()))\
-			.drop("br_xfer_files").withColumnRenamed("br_xfer_files_tmp", "br_xfer_files")\
-			.withColumn("now_tmp", pdf.now.cast(IntegerType()))\
-			.drop("now").withColumnRenamed("now_tmp", "now")  
-
-    # dynamically build lambdas
-	lambda_builder = LambdaBuilder(LAMBDAS, GROUPKEYS, GROUPRES)
+    # process aggregation parameters
 	keys = [key.lower().strip() for key in opts.keys.split(',')]
 	results = [result.lower().strip() for result in opts.results.split(',')]
-	mapf = lambda_builder.mapf(keys, results)
-	reducef = lambda_builder.reducef(opts.lambdaf)
+	aggregations = [agg.strip() for agg in opts.aggregations.split(',')]
+	order = [orde.strip() for orde in opts.order.split(',')] if opts.order else []
+	asc = [asce.strip() for asce in opts.asc.split(',')] if opts.order else []
+
+	validateAggregationParams(keys, results, aggregations, order)
+	
+	resAgg_dic = zipResultAgg(results, aggregations)
+	order, asc = formOrdAsc(order, asc, resAgg_dic)
 
 	# perform aggregation
-	if opts.empty:
-		aggres = ndf.map(mapf).reduceByKey(reducef)   		
+	if order:
+		aggres = ndf.groupBy(keys).agg(resAgg_dic).orderBy(order, ascending=asc)
 	else:
-		aggres = ndf.map(mapf).filter(lambda v: not isEmpty(v[0])).reduceByKey(reducef)
+		aggres = ndf.groupBy(keys).agg(resAgg_dic)
 
 	# output results
 	if opts.fout:
-		print(toStringKeyVal((keys, results)))	# print schema that was created dynamically
-		lines = aggres.map(toStringKeyVal)
-		lines.saveAsTextFile(opts.fout)
+		if opts.header:
+			aggres.write.format('com.databricks.spark.csv').options(header = 'true').save(opts.fout)
+		else:
+			aggres.write.format('com.databricks.spark.csv').save(opts.fout)
 	else:
-		printKeyVal(aggres, 15, toStringKeyVal((keys, results)))
+		aggres.show(15)
 
 if __name__ == '__main__':
 	main()

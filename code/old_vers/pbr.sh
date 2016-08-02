@@ -24,16 +24,11 @@ elif [[  $1 =~ -?-yarn(-cluster)?$ ]]; then
     # once CERN IT will resolve python version we can remove PYSPARK_PYTHON
 #    PYSPARK_PYTHON='/afs/cern.ch/user/v/valya/public/python27'
     PYSPARK_PYTHON='/etc/spark/python' \
-    spark-submit \
-	--master yarn-client \
-	--packages com.databricks:spark-csv_2.11:1.4.0 \
-	$wdir/pbr.py ${1+"$@"}
+        spark-submit --master yarn-client $wdir/pbr.py ${1+"$@"}
 else
     PYSPARK_PYTHON='/afs/cern.ch/user/v/valya/public/python27'
-    spark-submit \
-	--executor-memory $((`nproc`/4))G \
+    spark-submit --executor-memory $((`nproc`/4))G \
         --master local[$((`nproc`/4))] \
-	--packages com.databricks:spark-csv_2.11:1.4.0 \
-	$wdir/pbr.py ${1+"$@"}
+        $wdir/pbr.py ${1+"$@"}
 fi
 
