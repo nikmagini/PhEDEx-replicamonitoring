@@ -182,7 +182,7 @@ def main():
 	optmgr  = OptionParser()
 	opts = optmgr.parser.parse_args()
 
-    # setup spark/sql context to be used for communication with HDFS
+	# setup spark/sql context to be used for communication with HDFS
 	sc = SparkContext(appName="phedex_br")
 	if not opts.yarn:
 		sc.setLogLevel("ERROR")
@@ -190,7 +190,7 @@ def main():
 
 	schema_def = schema()
 
-    # read given file(s) into RDD
+	# read given file(s) into RDD
 	if opts.fname:
 		pdf = sqlContext.read.format('com.databricks.spark.csv')\
 						.options(treatEmptyValuesAsNulls='true', nullValue='null')\
@@ -231,7 +231,7 @@ def main():
 		print("pdf data type", type(ndf))
 		ndf.printSchema()
 
-    # process aggregation parameters
+	# process aggregation parameters
 	keys = [key.lower().strip() for key in opts.keys.split(',')]
 	results = [result.lower().strip() for result in opts.results.split(',')]
 	aggregations = [agg.strip() for agg in opts.aggregations.split(',')]
