@@ -26,19 +26,35 @@ def formFileHeader(fout):
 ```
 - Solved disk quota problems by submitting a ticket for disk space increasing up to 300GB
 - Developed delta function for calculating block transfers between different time intervals. The operation is not dynamic. It has fixed fields: node_name, date. User can only specify one result field (most often it will be br_node_bytes) and interval in days. The basic algorithm:
-	1. For all dates in the given period generate interval group
+	- For all dates in the given period generate interval group
 	```
-	datedic = generateDateDict(fromdate, todate, opts.interval)
-	boundic = generateBoundDict(datedic)
-	max_interval = max(datedic.values())
+	def generateDateDict(fromdate_str, todate_str, interval_str):
+		fromdate = dt.strptime(fromdate_str, "%Y-%m-%d")
+		todate = dt.strptime(todate_str, "%Y-%m-%d")
+		interval = int(interval_str)
+
+		currentdate = fromdate
+		currentgroup = 1
+		elementcount = 0
+		dategroup_dic = {}
+
+		while currentdate <= todate:
+			dategroup_dic[dt.strftime(currentdate, "%Y-%m-%d")] = currentgroup
+			currentdate = currentdate + timedelta(days=1)
+			elementcount += 1
+			if elementcount >= interval:
+				elementcount = 0
+				currentgroup += 1 	
+
+		return dategroup_dic
 	```
-	2. Group data by block, node, interval and retrieve the newest result value in the interval. If newest value in the interval does not match the end in the interval - newest result value 0.
+	- Group data by block, node, interval and retrieve the newest result value in the interval. If newest value in the interval does not match the end in the interval - newest result value 0.
 	```	
 	win = Window.partitionBy(idf.block_name, idf.node_name, idf.interval_group).orderBy(idf.now.desc())		
 	idf = idf.withColumn("row_number", rowNumber().over(win))
 	rdf = idf.where(idf.row_number == 1).withColumn(result, when(idf.now == interval_end(idf.interval_group), getattr(idf, result)).otherwise(lit(0)))
 	```
-	3. Generate records for blocks that disappeared from node (in csv there is no row because block is missing but the period has minus delta)
+	- Generate records for blocks that disappeared from node (in csv there is no row because block is missing but the period has minus delta)
 	```
 	adf = adf.withColumn("interval_group", adf.interval_group  - 1)
 	cond = [rdf.interval_group == adf.interval_group, rdf.block_name == adf.block_name, rdf.node_name == adf.node_name]
@@ -46,16 +62,16 @@ def formFileHeader(fout):
 	hdf = rdf.subtract(mdf).filter(rdf.interval_group != max_interval).select(rdf.block_name, rdf.node_name, \
 										 (rdf.interval_group + 1).alias("interval_group"), lit(0))
 	```
-	4. Join existing and generated records
+	- Join existing and generated records
 	```
 	idf = rdf.unionAll(hdf)
 	```
-	5. Calculate deltas between intervals
+	- Calculate deltas between intervals
 	```
 	win = Window.partitionBy(idf.block_name, idf.node_name).orderBy(idf.interval_group)		
 	fdf = idf.withColumn("delta", getattr(idf, result) - lag(getattr(idf, result), 1, 0).over(win))	
 	```
-	6. Dvide delta_plus and delta_minus columns and aggregate by date and node
+	- Dvide delta_plus and delta_minus columns and aggregate by date and node
 	```
 	ddf =fdf.withColumn("delta_plus", when(fdf.delta > 0, fdf.delta).otherwise(0)) \
 			.withColumn("delta_minus", when(fdf.delta < 0, fdf.delta).otherwise(0))
@@ -74,4 +90,4 @@ def formFileHeader(fout):
 | 1 month  	| ~200GB | -          | -     | -       | -       | -        |
 | 1 year    | ~850GB | -          | -     | -       | -       | -        |
 
->=30 records were not processed due to errors 
+> />=30 records were not processed due to errors 

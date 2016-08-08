@@ -346,9 +346,9 @@ def main():
 				.withColumn("delta_minus", when(fdf.delta < 0, fdf.delta).otherwise(0))
 
 		aggres = ddf.groupBy(ddf.node_name, ddf.interval_group).agg(sum(ddf.delta_plus).alias("delta_plus"),\
-													 				sum(ddf.delta_minus).alias("delta_minus"))
+							sum(ddf.delta_minus).alias("delta_minus"))
 
-		aggres = aggres.select(aggres.node_name, interval_end(aggres.interval_group).alias("date"),	aggres.delta_plus, aggres.delta_minus)
+		aggres = aggres.select(aggres.node_name, interval_end(aggres.interval_group).alias("date"), aggres.delta_plus, aggres.delta_minus)
 	else:	
 		resAgg_dic = zipResultAgg(results, aggregations)
 		order, asc = formOrdAsc(order, asc, resAgg_dic)
