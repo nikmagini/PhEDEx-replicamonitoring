@@ -286,7 +286,7 @@ def main():
 			 .withColumn("node_kind", nodef(pdf.node_id)) \
 			 .withColumn("now", from_unixtime(pdf.now_sec, "YYYY-MM-dd")) \
 			 .withColumn("acquisition_era", when(regexp_extract(pdf.dataset_name, acquisition_era_reg, 1) == "", lit("null")).otherwise(regexp_extract(pdf.dataset_name, acquisition_era_reg, 1))) \
-			 .withColumn("data_tier", when(regexp_extract(pdf.dataset_name, data_tier_reg, 1) == "", lit("null")).otherwise(regexp_extract(pdf.dataset_name, data_tier_reg, 1))) \
+			 .withColumn("data_tier", when(regexp_extract(pdf.dataset_name, data_tier_reg, 1) == "", lit("null")).otherwise(regexp_extract(pdf.dataset_name, data_tier_reg, 1)))
 
 	# print dataframe schema
 	if opts.verbose:
