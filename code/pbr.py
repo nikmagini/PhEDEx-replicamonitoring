@@ -7,6 +7,7 @@ Author     		: Aurimas Repecka <aurimas.repecka AT gmail dot com>
 Based On Work By   	: Valentin Kuznetsov <vkuznet AT gmail dot com>
 Description:
     http://stackoverflow.com/questions/29936156/get-csv-to-spark-dataframe
+	http://stackoverflow.com/questions/33878370/spark-dataframe-select-the-first-row-of-each-group
 """
 
 # system modules
@@ -15,19 +16,24 @@ import sys
 import argparse
 
 from pyspark import SparkContext
+from pyspark.sql import Row
 from pyspark.sql import SQLContext
+from pyspark.sql import HiveContext
 from pyspark.sql import DataFrame
+from pyspark.sql.window import Window
 from pyspark.sql.types import DoubleType, IntegerType, StructType, StructField, StringType
-from pyspark.sql.functions import udf, from_unixtime, date_format, regexp_extract, when, lit
+from pyspark.sql.functions import udf, from_unixtime, date_format, regexp_extract, when, lit, lag, lead, coalesce, sum, rowNumber
 
 import re
 from datetime import datetime as dt
+from datetime import timedelta
 
 # additional data needed for joins
 GROUP_CSV_PATH = "additional_data/phedex_groups.csv"												# user group names
 NODE_CSV_PATH = "additional_data/phedex_node_kinds.csv"												# node kinds
 
-AGGREGATIONS = ["sum", "count", "min", "max", "first", "last", "mean"]  							# supported aggregation functions
+DELTA = "delta"
+AGGREGATIONS = ["sum", "count", "min", "max", "first", "last", "mean", "delta"]						# supported aggregation functions
 GROUPKEYS = ["now", "dataset_name", "block_name", "node_name", "br_is_custiodial", "br_user_group",
 			"data_tier", "acquisition_era", "node_kind", "now_sec"]									# supported group key values
 GROUPRES = ["block_files", "block_bytes", "br_src_files", "br_src_bytes", "br_dest_files", 
@@ -65,6 +71,10 @@ class OptionParser():
 			dest="asc", default="", help="1 or 0 (csv) for ordering columns (0-desc, 1-asc)")
 		self.parser.add_argument("--header", action="store_true",
 			dest="header", default=False, help="Print header in the first file of csv")
+		self.parser.add_argument("--interval", action="store",
+			dest="interval", default="1", help="Interval for delta operation in days")
+
+
 
 def schema():
 	return StructType([StructField("now_sec", DoubleType(), True),
@@ -95,6 +105,10 @@ def schema():
 		 			 StructField("br_user_group_id", IntegerType(), True),
 		 			 StructField("replica_time_create", DoubleType(), True),
 		 			 StructField("replica_time_updater", DoubleType(), True)])
+
+# returns string representatio of object
+def toStringVal(item):
+	return ','.join(str(i) for i in item) if hasattr(item, '__iter__') else str(item)
 
 # get dictionaries needed for joins
 def getJoinDic():   
@@ -132,7 +146,7 @@ def getFileList(basedir, fromdate, todate):
 			dirdate_dic[di] = dt.strptime(matching.group(1), "%Y-%m-%d")
 
 	# if files are not in hdfs --> return [ basedir + k for k, v in dirdate_dic.items() if v >= fromdate and v <= todate]
-	return [k for k, v in dirdate_dic.items() if v >= fromdate and v <= todate]	
+	return [k for k, v in dirdate_dic.items() if v >= fromdate and v <= todate]		
 
 # validate aggregation parameters
 def validateAggregationParams(keys, res, agg, order):
@@ -153,12 +167,55 @@ def validateAggregationParams(keys, res, agg, order):
 	if msg:
 		raise NotImplementedError(msg)
 
+# validates delta parameters
+def validateDeltaParam(interval_str, results):
+	try:
+		interval = int(interval_str)
+	except ValueError:
+		raise ValueError("Interval must be an integer value")
+
+	if len(results) != 1:
+		raise ValueError("Delta aggregation can have only 1 result field")
+
+
 # validate dates and fill default values		
 def defDates(fromdate, todate):
 	if not fromdate or not todate:
 		fromdate = dt.strftime(dt.now(), "%Y-%m-%d")
 		todate = dt.strftime(dt.now(), "%Y-%m-%d")
 	return fromdate, todate
+
+# generates dictionary based on date and  interval group pairs
+def generateDateDict(fromdate_str, todate_str, interval_str):
+	fromdate = dt.strptime(fromdate_str, "%Y-%m-%d")
+	todate = dt.strptime(todate_str, "%Y-%m-%d")
+	interval = int(interval_str)
+
+	currentdate = fromdate
+	currentgroup = 1
+	elementcount = 0
+	dategroup_dic = {}
+
+	while currentdate <= todate:
+		dategroup_dic[dt.strftime(currentdate, "%Y-%m-%d")] = currentgroup
+		currentdate = currentdate + timedelta(days=1)
+		elementcount += 1
+		if elementcount >= interval:
+			elementcount = 0
+			currentgroup += 1 	
+
+	return dategroup_dic
+
+# generates interval boundaries dictionary
+def generateBoundDict(datedic):
+	boundic = {}
+	intervals = set(datedic.values())
+
+	for interval in intervals:
+		values = [k for k, v in datedic.items() if v == interval]
+		boundic[interval] = [min(values), max(values)]
+		
+	return boundic
 
 # creating results and aggregation dictionary
 def zipResultAgg(res, agg):
@@ -172,8 +229,16 @@ def formOrdAsc(order, asc, resAgg_dic):
 
 # unions all files in one dataframe
 def unionAll(dfs):
-	return reduce(DataFrame.unionAll, dfs)
+	return reduce(DataFrame.unionAll, dfs)		
 
+# forms file header for output file
+def formFileHeader(fout):
+	now_date = dt.strftime(dt.now(), "%Y-%m-%d")
+	file_list = os.popen("hadoop fs -ls %s" % fout).read().splitlines()
+	# if files are not in hdfs --> file_list = os.listdir(fout)
+	now_file_list = [file_path for file_path in file_list if now_date in file_path]
+	return  fout + "/" + dt.strftime(dt.now(), "%Y-%m-%d_%H:%M:%S") + "_execution_" + \
+				str(len(now_file_list)+1)
 
 #########################################################################################################################################
 
@@ -182,15 +247,15 @@ def main():
 	optmgr  = OptionParser()
 	opts = optmgr.parser.parse_args()
 
-	# setup spark/sql context to be used for communication with HDFS
+    # setup spark/sql context to be used for communication with HDFS
 	sc = SparkContext(appName="phedex_br")
 	if not opts.yarn:
 		sc.setLogLevel("ERROR")
-	sqlContext = SQLContext(sc)
+	sqlContext = HiveContext(sc)
 
 	schema_def = schema()
 
-	# read given file(s) into RDD
+    # read given file(s) into RDD
 	if opts.fname:
 		pdf = sqlContext.read.format('com.databricks.spark.csv')\
 						.options(treatEmptyValuesAsNulls='true', nullValue='null')\
@@ -209,21 +274,19 @@ def main():
 						for file_path in files])
 	else:
 		raise ValueError("File or directory not specified. Specify fname or basedir parameters.")
-	
+
 	# parsing additional data (to given data adding: group name, node kind, acquisition era, data tier, now date)
 	groupdic, nodedic = getJoinDic()
 	acquisition_era_reg = r"^/[^/]*/([^/^-]*)-[^/]*/[^/]*$"	
 	data_tier_reg = r"^/[^/]*/[^/^-]*-[^/]*/([^/]*)$"
 	groupf = udf(lambda x: groupdic[x], StringType())
 	nodef = udf(lambda x: nodedic[x], StringType())
-	acquisitionf = udf(lambda x: regexp_extract(x, acquisition_era_reg, 1) or "null")
-	datatierf = udf(lambda x: regexp_extract(x, data_tier_reg, 1) or "null")
 
 	ndf = pdf.withColumn("br_user_group", groupf(pdf.br_user_group_id)) \
 			 .withColumn("node_kind", nodef(pdf.node_id)) \
 			 .withColumn("now", from_unixtime(pdf.now_sec, "YYYY-MM-dd")) \
 			 .withColumn("acquisition_era", when(regexp_extract(pdf.dataset_name, acquisition_era_reg, 1) == "", lit("null")).otherwise(regexp_extract(pdf.dataset_name, acquisition_era_reg, 1))) \
-			 .withColumn("data_tier", when(regexp_extract(pdf.dataset_name, data_tier_reg, 1) == "", lit("null")).otherwise(regexp_extract(pdf.dataset_name, data_tier_reg, 1)))
+			 .withColumn("data_tier", when(regexp_extract(pdf.dataset_name, data_tier_reg, 1) == "", lit("null")).otherwise(regexp_extract(pdf.dataset_name, data_tier_reg, 1))) \
 
 	# print dataframe schema
 	if opts.verbose:
@@ -239,22 +302,70 @@ def main():
 	asc = [asce.strip() for asce in opts.asc.split(',')] if opts.order else []
 
 	validateAggregationParams(keys, results, aggregations, order)
-	
-	resAgg_dic = zipResultAgg(results, aggregations)
-	order, asc = formOrdAsc(order, asc, resAgg_dic)
 
-	# perform aggregation
-	if order:
-		aggres = ndf.groupBy(keys).agg(resAgg_dic).orderBy(order, ascending=asc)
-	else:
-		aggres = ndf.groupBy(keys).agg(resAgg_dic)
+	# if delta aggregation is used
+	if DELTA in aggregations:
+		validateDeltaParam(opts.interval, results)			
+		result = results[0]
+
+		#1 for all dates generate interval group dictionary
+		datedic = generateDateDict(fromdate, todate, opts.interval)
+		boundic = generateBoundDict(datedic)
+		max_interval = max(datedic.values())
+
+		interval_group = udf(lambda x: datedic[x], IntegerType())
+		interval_start = udf(lambda x: boundic[x][0], StringType())		
+		interval_end = udf(lambda x: boundic[x][1], StringType())
+
+		#2 group data by block, node, interval and last result in the interval
+		ndf = ndf.select(ndf.block_name, ndf.node_name, ndf.now, getattr(ndf, result))
+		idf = ndf.withColumn("interval_group", interval_group(ndf.now))
+		win = Window.partitionBy(idf.block_name, idf.node_name, idf.interval_group).orderBy(idf.now.desc())		
+		idf = idf.withColumn("row_number", rowNumber().over(win))
+		rdf = idf.where(idf.row_number == 1).withColumn(result, when(idf.now == interval_end(idf.interval_group), getattr(idf, result)).otherwise(lit(0)))
+		rdf = rdf.select(rdf.block_name, rdf.node_name, rdf.interval_group, getattr(rdf, result))
+		rdf.cache()
+
+		#3 create intervals that not exist but has minus delta
+		adf = rdf.alias("adf")
+		adf = adf.withColumn("interval_group", adf.interval_group  - 1)
+		cond = [rdf.interval_group == adf.interval_group, rdf.block_name == adf.block_name, rdf.node_name == adf.node_name]
+		mdf = rdf.join(adf, cond, "leftsemi")
+		hdf = rdf.subtract(mdf).filter(rdf.interval_group != max_interval).select(rdf.block_name, rdf.node_name, \
+										 (rdf.interval_group + 1).alias("interval_group"), lit(0))
+
+		#4 join data frames	
+		idf = rdf.unionAll(hdf)
+
+		#3 join every interval with previous interval
+		win = Window.partitionBy(idf.block_name, idf.node_name).orderBy(idf.interval_group)		
+		fdf = idf.withColumn("delta", getattr(idf, result) - lag(getattr(idf, result), 1, 0).over(win))	
+
+		#5 calculate delta_plus and delta_minus columns and aggregate by date and node
+		ddf =fdf.withColumn("delta_plus", when(fdf.delta > 0, fdf.delta).otherwise(0)) \
+				.withColumn("delta_minus", when(fdf.delta < 0, fdf.delta).otherwise(0))
+
+		aggres = ddf.groupBy(ddf.node_name, ddf.interval_group).agg(sum(ddf.delta_plus).alias("delta_plus"),\
+													 				sum(ddf.delta_minus).alias("delta_minus"))
+
+		aggres = aggres.select(aggres.node_name, interval_end(aggres.interval_group).alias("date"),	aggres.delta_plus, aggres.delta_minus)
+	else:	
+		resAgg_dic = zipResultAgg(results, aggregations)
+		order, asc = formOrdAsc(order, asc, resAgg_dic)
+
+		# perform aggregation
+		if order:
+			aggres = ndf.groupBy(keys).agg(resAgg_dic).orderBy(order, ascending=asc)
+		else:
+			aggres = ndf.groupBy(keys).agg(resAgg_dic)
 
 	# output results
 	if opts.fout:
+		fout_header = formFileHeader(opts.fout)
 		if opts.header:
-			aggres.write.format('com.databricks.spark.csv').options(header = 'true').save(opts.fout)
+			aggres.write.format('com.databricks.spark.csv').options(header = 'true').save(fout_header)
 		else:
-			aggres.write.format('com.databricks.spark.csv').save(opts.fout)
+			aggres.write.format('com.databricks.spark.csv').save(fout_header)
 	else:
 		aggres.show(15)
 

@@ -66,6 +66,10 @@ Verbose is used for printing dataframes schema during data processing.
 
 Yarn is used for activitacing Yarn cluster management technology.
 
+### interval
+
+Interval is used for delta operation. It defines between what periods delta will be calculated. Interval represents duration in days, so it should be defined as integer number.
+
 
 ```
 bash pbr.sh --yarn \
@@ -76,7 +80,8 @@ bash pbr.sh --yarn \
 		--results br_node_files,br_dest_files \
 		--aggregations min,sum \
 		--order data_tier,br_dest_files \
-		--asc 0,1 
+		--asc 0,1
+		#--interval 1 
 		#--header
 		#--fout hdfs:///user/arepecka/ReplicaMonitoring
 		#--verbose 
