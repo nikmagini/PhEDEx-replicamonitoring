@@ -246,7 +246,7 @@ def main():
 	optmgr  = OptionParser()
 	opts = optmgr.parser.parse_args()
 
-    # setup spark/sql context to be used for communication with HDFS
+	# setup spark/sql context to be used for communication with HDFS
 	sc = SparkContext(appName="phedex_br")
 	if not opts.yarn:
 		sc.setLogLevel("ERROR")
@@ -254,7 +254,7 @@ def main():
 
 	schema_def = schema()
 
-    # read given file(s) into RDD
+	# read given file(s) into RDD
 	if opts.fname:
 		pdf = sqlContext.read.format('com.databricks.spark.csv')\
 						.options(treatEmptyValuesAsNulls='true', nullValue='null')\
