@@ -26,6 +26,7 @@ elif [[  $1 =~ -?-yarn(-cluster)?$ ]]; then
     PYSPARK_PYTHON='/etc/spark/python' \
     spark-submit \
         --master yarn-client \
+        --executor-memory 5g \
         --packages com.databricks:spark-csv_2.10:1.4.0 \
         $wdir/pbr.py ${1+"$@"}
 else

@@ -233,12 +233,11 @@ def unionAll(dfs):
 
 # forms file header for output file
 def formFileHeader(fout):
-	now_date = dt.strftime(dt.now(), "%Y-%m-%d")
-	file_list = os.popen("hadoop fs -ls %s" % fout).read().splitlines()
-	# if files are not in hdfs --> file_list = os.listdir(fout)
-	now_file_list = [file_path for file_path in file_list if now_date in file_path]
-	return  fout + "/" + dt.strftime(dt.now(), "%Y-%m-%d_%H:%M:%S") + "_execution_" + \
-				str(len(now_file_list)+1)
+        now_date = dt.strftime(dt.now(), "%Y-%m-%d")
+        file_list = os.popen("hadoop fs -ls %s" % fout).read().splitlines()
+        now_file_list = [file_path for file_path in file_list if now_date in file_path]
+        return  fout + "/" + dt.strftime(dt.now(), "%Y-%m-%d_%Hh%Mm%Ss") + "_execution_" + \
+                str(len(now_file_list)+1)
 
 #########################################################################################################################################
 
@@ -286,7 +285,7 @@ def main():
 			 .withColumn("node_kind", nodef(pdf.node_id)) \
 			 .withColumn("now", from_unixtime(pdf.now_sec, "YYYY-MM-dd")) \
 			 .withColumn("acquisition_era", when(regexp_extract(pdf.dataset_name, acquisition_era_reg, 1) == "", lit("null")).otherwise(regexp_extract(pdf.dataset_name, acquisition_era_reg, 1))) \
-			 .withColumn("data_tier", when(regexp_extract(pdf.dataset_name, data_tier_reg, 1) == "", lit("null")).otherwise(regexp_extract(pdf.dataset_name, data_tier_reg, 1)))
+			 .withColumn("data_tier", when(regexp_extract(pdf.dataset_name, data_tier_reg, 1) == "", lit("null")).otherwise(regexp_extract(pdf.dataset_name, data_tier_reg, 1))) \
 
 	# print dataframe schema
 	if opts.verbose:
@@ -320,35 +319,37 @@ def main():
 		#2 group data by block, node, interval and last result in the interval
 		ndf = ndf.select(ndf.block_name, ndf.node_name, ndf.now, getattr(ndf, result))
 		idf = ndf.withColumn("interval_group", interval_group(ndf.now))
-		win = Window.partitionBy(idf.block_name, idf.node_name, idf.interval_group).orderBy(idf.now.desc())		
+		win = Window.partitionBy(idf.block_name, idf.node_name, idf.interval_group).orderBy(idf.now.desc())	
 		idf = idf.withColumn("row_number", rowNumber().over(win))
-		rdf = idf.where(idf.row_number == 1).withColumn(result, when(idf.now == interval_end(idf.interval_group), getattr(idf, result)).otherwise(lit(0)))
+		rdf = idf.where((idf.row_number == 1) & (idf.interval_group != 0))\
+			 .withColumn(result, when(idf.now == interval_end(idf.interval_group), getattr(idf, result)).otherwise(lit(0)))
 		rdf = rdf.select(rdf.block_name, rdf.node_name, rdf.interval_group, getattr(rdf, result))
 		rdf.cache()
 
 		#3 create intervals that not exist but has minus delta
-		adf = rdf.alias("adf")
-		adf = adf.withColumn("interval_group", adf.interval_group  - 1)
-		cond = [rdf.interval_group == adf.interval_group, rdf.block_name == adf.block_name, rdf.node_name == adf.node_name]
-		mdf = rdf.join(adf, cond, "leftsemi")
-		hdf = rdf.subtract(mdf).filter(rdf.interval_group != max_interval).select(rdf.block_name, rdf.node_name, \
-										 (rdf.interval_group + 1).alias("interval_group"), lit(0))
+		win = Window.partitionBy(idf.block_name, idf.node_name).orderBy(idf.interval_group)
+		adf = rdf.withColumn("interval_group_aft", lead(rdf.interval_group, 1, 0).over(win))
+		hdf = adf.filter(((adf.interval_group + 1) != adf.interval_group_aft) & (adf.interval_group != max_interval))\
+			 .withColumn("interval_group", adf.interval_group + 1)\
+			 .withColumn(result, lit(0))\
+			 .drop(adf.interval_group_aft)
 
-		#4 join data frames	
+		#4 join data frames
 		idf = rdf.unionAll(hdf)
-
+		
 		#3 join every interval with previous interval
-		win = Window.partitionBy(idf.block_name, idf.node_name).orderBy(idf.interval_group)		
-		fdf = idf.withColumn("delta", getattr(idf, result) - lag(getattr(idf, result), 1, 0).over(win))	
+		win = Window.partitionBy(idf.block_name, idf.node_name).orderBy(idf.interval_group)
+		fdf = idf.withColumn("delta", getattr(idf, result) - lag(getattr(idf, result), 1, 0).over(win))
 
 		#5 calculate delta_plus and delta_minus columns and aggregate by date and node
 		ddf =fdf.withColumn("delta_plus", when(fdf.delta > 0, fdf.delta).otherwise(0)) \
 				.withColumn("delta_minus", when(fdf.delta < 0, fdf.delta).otherwise(0))
 
 		aggres = ddf.groupBy(ddf.node_name, ddf.interval_group).agg(sum(ddf.delta_plus).alias("delta_plus"),\
-							sum(ddf.delta_minus).alias("delta_minus"))
+					 				sum(ddf.delta_minus).alias("delta_minus"))
 
 		aggres = aggres.select(aggres.node_name, interval_end(aggres.interval_group).alias("date"), aggres.delta_plus, aggres.delta_minus)
+		
 	else:	
 		resAgg_dic = zipResultAgg(results, aggregations)
 		order, asc = formOrdAsc(order, asc, resAgg_dic)
@@ -367,7 +368,7 @@ def main():
 		else:
 			aggres.write.format('com.databricks.spark.csv').save(fout_header)
 	else:
-		aggres.show(15)
+		aggres.show(50)
 
 if __name__ == '__main__':
 	main()
