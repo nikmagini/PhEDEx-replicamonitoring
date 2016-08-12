@@ -74,8 +74,6 @@ class OptionParser():
 		self.parser.add_argument("--interval", action="store",
 			dest="interval", default="1", help="Interval for delta operation in days")
 
-
-
 def schema():
 	return StructType([StructField("now_sec", DoubleType(), True),
 		 			 StructField("dataset_name", StringType(), True),
