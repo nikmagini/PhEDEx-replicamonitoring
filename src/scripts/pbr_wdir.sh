@@ -10,8 +10,7 @@ if [ "$#" -eq 0 ]; then
     exit 1
 fi
 
-# find our where package is installed on a system
-wroot=`python -c "import PhEDEx-replicamonitoring; print '/'.join(PhEDEx-replicamonitoring.__file__.split('/')[:-1])"`
+wdir=$PWD/../python
 
 if [ "$1" == "-h" ] || [ "$1" == "--help" ] || [ "$1" == "-help" ]; then
     # run help
@@ -26,17 +25,15 @@ elif [[  $1 =~ -?-yarn(-cluster)?$ ]]; then
 #    PYSPARK_PYTHON='/afs/cern.ch/user/v/valya/public/python27'
     PYSPARK_PYTHON='/etc/spark/python' \
     spark-submit \
-        --master yarn-client \
-        --executor-memory 5g \
-        --packages com.databricks:spark-csv_2.10:1.4.0 \
-        $wroot/pbr.py ${1+"$@"}
+	--master yarn-client \
+	--executor-memory 5g \
+	--packages com.databricks:spark-csv_2.10:1.4.0 \
+	$wdir/pbr.py ${1+"$@"}
 else
     PYSPARK_PYTHON='/afs/cern.ch/user/v/valya/public/python27'
     spark-submit \
-        --executor-memory $((`nproc`/4))G \
+	--executor-memory $((`nproc`/4))G \
         --master local[$((`nproc`/4))] \
-        --packages com.databricks:spark-csv_2.10:1.4.0 \
-        $wroot/pbr.py ${1+"$@"}
+	--packages com.databricks:spark-csv_2.10:1.4.0 \
+	$wdir/pbr.py ${1+"$@"}
 fi
-
-

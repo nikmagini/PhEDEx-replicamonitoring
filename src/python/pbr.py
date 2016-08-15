@@ -29,8 +29,8 @@ from datetime import datetime as dt
 from datetime import timedelta
 
 # additional data needed for joins
-GROUP_CSV_PATH = "additional_data/phedex_groups.csv"												# user group names
-NODE_CSV_PATH = "additional_data/phedex_node_kinds.csv"												# node kinds
+GROUP_CSV_PATH = "../../data/phedex_groups.csv"														# user group names
+NODE_CSV_PATH = "../../data/phedex_node_kinds.csv"													# node kinds
 
 DELTA = "delta"
 AGGREGATIONS = ["sum", "count", "min", "max", "first", "last", "mean", "delta"]						# supported aggregation functions
@@ -73,8 +73,15 @@ class OptionParser():
 			dest="header", default=False, help="Print header in the first file of csv")
 		self.parser.add_argument("--interval", action="store",
 			dest="interval", default="1", help="Interval for delta operation in days")
+		self.parser.add_argument("--filt", action="store",
+			dest="filt", default="", help="Filtering field:value")
 
 def schema():
+	"""
+	Provides schema (names, types, nullable) for csv snapshot
+   
+	:returns: StructType consisting StructField array
+	"""
 	return StructType([StructField("now_sec", DoubleType(), True),
 		 			 StructField("dataset_name", StringType(), True),
  					 StructField("dataset_id", IntegerType(), True),
@@ -104,12 +111,23 @@ def schema():
 		 			 StructField("replica_time_create", DoubleType(), True),
 		 			 StructField("replica_time_updater", DoubleType(), True)])
 
-# returns string representatio of object
+
 def toStringVal(item):
+	"""
+	Converts element or iterable item to string representation
+	
+	:param item: single element or collection of elements
+	:returns: element string representation
+	"""
 	return ','.join(str(i) for i in item) if hasattr(item, '__iter__') else str(item)
 
-# get dictionaries needed for joins
+
 def getJoinDic():   
+	"""
+	Gets group and node dictionaries needed for joins 
+
+	:returns: group and node dictionaries
+	"""
 	groupdic = {None : "null"}
 	with open(GROUP_CSV_PATH) as fg:
 		for line in fg.read().splitlines():
@@ -124,8 +142,17 @@ def getJoinDic():
 
 	return groupdic, nodedic  
 
-# get file list by dates
+
 def getFileList(basedir, fromdate, todate):
+	"""
+	Finds snapshots in given directory by interval dates
+    
+	:param basedir: directory where snapshots are held
+	:param fromdate: date from which snapshots are filtered
+	:param todate: date until which snapshots are filtered
+	:returns: array of filtered snapshots paths
+	:raises ValueError: if unparsable date format
+	"""
 	dirs = os.popen("hadoop fs -ls %s | sed '1d;s/  */ /g' | cut -d\  -f8" % basedir).read().splitlines()
 	# if files are not in hdfs --> dirs = os.listdir(basedir)
 	
@@ -146,12 +173,23 @@ def getFileList(basedir, fromdate, todate):
 	# if files are not in hdfs --> return [ basedir + k for k, v in dirdate_dic.items() if v >= fromdate and v <= todate]
 	return [k for k, v in dirdate_dic.items() if v >= fromdate and v <= todate]		
 
-# validate aggregation parameters
-def validateAggregationParams(keys, res, agg, order):
+
+def validateAggregationParams(keys, res, agg, order, filt):
+	"""
+	Validates aggregation parameters and form error message
+
+	:param keys: list of aggregation key fields (from GROUPKEYS)
+	:param res: list of aggregation result fields (from GROUPRES)
+	:param agg: list of aggregation type (from AGGREGATIONS)
+	:param order: list of ordering fields (from GROUPKEYS + GROUPRES)
+	:param filt: filtering field (from GROUPKEYS)
+	:raises NotImplementedError: if any of parameters are not in provided lists
+	"""
 	unsup_keys = set(keys).difference(set(GROUPKEYS)) 
 	unsup_res = set(res).difference(set(GROUPRES))
 	unsup_agg = set(agg).difference(set(AGGREGATIONS))
 	unsup_ord = set(order).difference(set(keys + res)) if order != [''] else None
+	unsup_filt = filt if filt not in GROUPKEYS else None
 	
 	msg = ""
 	if unsup_keys:
@@ -162,11 +200,20 @@ def validateAggregationParams(keys, res, agg, order):
 		msg += 'Aggregation function(s) = "%s" are not supported. ' % toStringVal(unsup_agg)
 	if unsup_ord:
 		msg += 'Order key(s) = "%s" are not available. ' % toStringVal(unsup_ord)
+	if unsup_filt:
+		msg += 'Filtering field = "%s" is not available' % toStringVal(unsup_filt)
 	if msg:
 		raise NotImplementedError(msg)
 
-# validates delta parameters
+
 def validateDeltaParam(interval_str, results):
+	"""
+	Validates parameters for delta operation
+    
+	:param interval_str: interval string representation
+	:param results: result field for delta operation
+	:raises ValueError: if interval is not integer or result contains more than one field
+	"""
 	try:
 		interval = int(interval_str)
 	except ValueError:
@@ -176,15 +223,29 @@ def validateDeltaParam(interval_str, results):
 		raise ValueError("Delta aggregation can have only 1 result field")
 
 
-# validate dates and fill default values		
 def defDates(fromdate, todate):
+	"""
+	Check if dates are specified and returns default values
+
+	:param fromdate: interval beggining date
+	:param todate: interval end date
+	:returns: tuple of from and to dates
+	"""
 	if not fromdate or not todate:
 		fromdate = dt.strftime(dt.now(), "%Y-%m-%d")
 		todate = dt.strftime(dt.now(), "%Y-%m-%d")
 	return fromdate, todate
 
-# generates dictionary based on date and  interval group pairs
+
 def generateDateDict(fromdate_str, todate_str, interval_str):
+	"""
+	Generates date dictionary with calculated interval group
+
+	:param fromdate_str: string representation of from date
+	:param todate_str: string representation of to date
+	:param interval_str: string represenation of interval
+	:returns: dictionary with key-value pairs - date:interval group
+	"""
 	fromdate = dt.strptime(fromdate_str, "%Y-%m-%d")
 	todate = dt.strptime(todate_str, "%Y-%m-%d")
 	interval = int(interval_str)
@@ -204,8 +265,14 @@ def generateDateDict(fromdate_str, todate_str, interval_str):
 
 	return dategroup_dic
 
-# generates interval boundaries dictionary
+
 def generateBoundDict(datedic):
+	"""
+	Generate dictionary with dates and its interval boundaries (start, end)
+
+	:param item: date dictionary with date and interval pairs
+	:returns: dictionary with dates and start and end of interval
+	"""
 	boundic = {}
 	intervals = set(datedic.values())
 
@@ -215,26 +282,52 @@ def generateBoundDict(datedic):
 		
 	return boundic
 
-# creating results and aggregation dictionary
+
 def zipResultAgg(res, agg):
+	"""
+	Zips results fields and aggregation types into one dictionary
+
+	:param res: list of aggregation result fields
+	:param agg: list of aggregation types
+	:returns: dictionary with result fields and aggregation types
+	"""
 	return dict(zip(res, agg)) if len(res) == len(agg) else dict(zip(res, agg * len(res)))
 
-# form ascennding and order arrays according aggregation functions
+
 def formOrdAsc(order, asc, resAgg_dic):
+	"""
+	Forms ordering fields and ordering values arrays according aggregation functions
+	
+	:param order: list of ordering fields
+	:param asc: list of booleans ascending
+	:returns: order fields and ascending arrays
+	"""
 	asc = map(int, asc) if len(order) == len(asc) else [1] * len(order)
 	orderN = [resAgg_dic[orde] + "(" + orde + ")" if orde in resAgg_dic.keys() else orde for orde in order] 
 	return orderN, asc
 
-# unions all files in one dataframe
+
 def unionAll(dfs):
+	"""
+	Unions snapshots in one dataframe	
+
+	:param item: list of dataframes
+	:returns: union of dataframes
+	"""
 	return reduce(DataFrame.unionAll, dfs)		
 
-# forms file header for output file
+
 def formFileHeader(fout):
-        now_date = dt.strftime(dt.now(), "%Y-%m-%d")
-        file_list = os.popen("hadoop fs -ls %s" % fout).read().splitlines()
-        now_file_list = [file_path for file_path in file_list if now_date in file_path]
-        return  fout + "/" + dt.strftime(dt.now(), "%Y-%m-%d_%Hh%Mm%Ss") + "_execution_" + \
+	"""
+	Forms output file header with date, time and execution number
+
+	:param fout: base dirctory of output files
+	:returns: string representation of output file
+	"""
+	now_date = dt.strftime(dt.now(), "%Y-%m-%d")
+	file_list = os.popen("hadoop fs -ls %s" % fout).read().splitlines()
+	now_file_list = [file_path for file_path in file_list if now_date in file_path]
+	return  fout + "/" + dt.strftime(dt.now(), "%Y-%m-%d_%Hh%Mm%Ss") + "_execution_" + \
                 str(len(now_file_list)+1)
 
 #########################################################################################################################################
@@ -280,10 +373,12 @@ def main():
 	nodef = udf(lambda x: nodedic[x], StringType())
 
 	ndf = pdf.withColumn("br_user_group", groupf(pdf.br_user_group_id)) \
-			 .withColumn("node_kind", nodef(pdf.node_id)) \
-			 .withColumn("now", from_unixtime(pdf.now_sec, "YYYY-MM-dd")) \
-			 .withColumn("acquisition_era", when(regexp_extract(pdf.dataset_name, acquisition_era_reg, 1) == "", lit("null")).otherwise(regexp_extract(pdf.dataset_name, acquisition_era_reg, 1))) \
-			 .withColumn("data_tier", when(regexp_extract(pdf.dataset_name, data_tier_reg, 1) == "", lit("null")).otherwise(regexp_extract(pdf.dataset_name, data_tier_reg, 1))) \
+		 .withColumn("node_kind", nodef(pdf.node_id)) \
+		 .withColumn("now", from_unixtime(pdf.now_sec, "YYYY-MM-dd")) \
+		 .withColumn("acquisition_era", when(regexp_extract(pdf.dataset_name, acquisition_era_reg, 1) == "",\
+					lit("null")).otherwise(regexp_extract(pdf.dataset_name, acquisition_era_reg, 1))) \
+		 .withColumn("data_tier", when(regexp_extract(pdf.dataset_name, data_tier_reg, 1) == "",\
+					lit("null")).otherwise(regexp_extract(pdf.dataset_name, data_tier_reg, 1)))
 
 	# print dataframe schema
 	if opts.verbose:
@@ -297,8 +392,12 @@ def main():
 	aggregations = [agg.strip() for agg in opts.aggregations.split(',')]
 	order = [orde.strip() for orde in opts.order.split(',')] if opts.order else []
 	asc = [asce.strip() for asce in opts.asc.split(',')] if opts.order else []
+	filtc, filtv = opts.filt.split(":") if opts.filt else (None,None)
 
-	validateAggregationParams(keys, results, aggregations, order)
+	validateAggregationParams(keys, results, aggregations, order, filtc)
+
+	if filtc and filtv:
+		ndf = ndf.filter(getattr(ndf, filtc) == filtv)
 
 	# if delta aggregation is used
 	if DELTA in aggregations:
@@ -344,7 +443,7 @@ def main():
 				.withColumn("delta_minus", when(fdf.delta < 0, fdf.delta).otherwise(0))
 
 		aggres = ddf.groupBy(ddf.node_name, ddf.interval_group).agg(sum(ddf.delta_plus).alias("delta_plus"),\
-					 				sum(ddf.delta_minus).alias("delta_minus"))
+																	sum(ddf.delta_minus).alias("delta_minus"))
 
 		aggres = aggres.select(aggres.node_name, interval_end(aggres.interval_group).alias("date"), aggres.delta_plus, aggres.delta_minus)
 		
