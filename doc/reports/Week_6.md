@@ -16,6 +16,7 @@
 - Fixed memory issues for delta operation on 1 month or more data
     - Increased executors memory to 5GB
     - Algorithm restructuring
+
 Nevertheless, I did not manage to run the script on all of data: ~900GB. Because large amounts of data appear in shuffle operations, executors memory (increased to 5G    B) is not enough. That causes spills and an error occurs.
 - Restructured delta operation for better performance
 ```
