@@ -11,7 +11,7 @@ if [ "$#" -eq 0 ]; then
 fi
 
 # find our where package is installed on a system
-wroot=`python -c "import PhEDEx-replicamonitoring; print '/'.join(PhEDEx-replicamonitoring.__file__.split('/')[:-1])"`
+wroot=`python -c "import ReplicaMonitoring; print '/'.join(ReplicaMonitoring.__file__.split('/')[:-1])"`
 
 if [ "$1" == "-h" ] || [ "$1" == "--help" ] || [ "$1" == "-help" ]; then
     # run help

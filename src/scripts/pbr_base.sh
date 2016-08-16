@@ -9,8 +9,8 @@ bash pbr.sh --yarn \
             --results br_node_bytes \
             --aggregations delta \
             --interval 1 \
-            --filt node_name:T2_US_Florida \
-            --fout hdfs:///user/arepecka/ReplicaMonitoring
+            --fout hdfs:///cms/phedex-monitoring/output
+            #--filt node_name:T2_US_Florida \
             #--keys now \
             #--order now,node_name \
             #--asc 0,1 \
