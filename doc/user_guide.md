@@ -66,6 +66,13 @@ Verbose is used for printing dataframes schema during data processing.
 
 Yarn is used for activitacing Yarn cluster management technology.
 
+### interval
+
+Interval is used for delta operation. It defines between what periods delta will be calculated. Interval represents duration in days, so it should be defined as integer number.
+
+### filt
+
+Filt is used for data filtering on one field from group keys. Filter is expected to be written in form - field:value. Field must match element from group keys list.
 
 ```
 bash pbr.sh --yarn \
@@ -76,7 +83,9 @@ bash pbr.sh --yarn \
 		--results br_node_files,br_dest_files \
 		--aggregations min,sum \
 		--order data_tier,br_dest_files \
-		--asc 0,1 
+		--asc 0,1
+		#--interval 1 
+        #--filt node_name:T2_US_Florida
 		#--header
 		#--fout hdfs:///user/arepecka/ReplicaMonitoring
 		#--verbose 
